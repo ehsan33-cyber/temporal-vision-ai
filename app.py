@@ -299,22 +299,25 @@ def gpt5_summarize(payload: dict, model_name: str):
     if client is None:
         return None
 
-    prompt = f"""
-You are assisting with an EEG review summary for research/prototyping.
-Write a concise, clinically-styled narrative based ONLY on the provided features.
-Do NOT diagnose. If information is insufficient, say so.
-
-FEATURES:
-{payload}
-""".strip()
+    # Build the prompt WITHOUT triple quotes to avoid paste/syntax issues
+    prompt = "\n".join([
+        "You are assisting with an EEG review summary for research/prototyping.",
+        "Write a concise, clinically-styled narrative based ONLY on the provided features.",
+        "Do NOT diagnose. If information is insufficient, say so.",
+        "",
+        "FEATURES:",
+        str(payload),
+    ])
 
     attempts = [
+        # Try with settings (newer SDKs)
         dict(
             model=model_name,
             input=prompt,
             reasoning={"effort": "minimal"},
             text={"verbosity": "low"},
         ),
+        # Fallback (most compatible)
         dict(
             model=model_name,
             input=prompt,
@@ -328,9 +331,10 @@ FEATURES:
             return resp.output_text
         except Exception as e:
             last_err = e
-            continue
 
+    # Never crash the app if GPT fails
     return f"GPT summary failed: {type(last_err).__name__}: {last_err}"
+
 
 
 You are assisting with an EEG review summary for research/prototyping.
