@@ -362,7 +362,7 @@ Include:
 
 FEATURES:
 {payload}
-""".strip()
+"".strip()
 
     resp = client.responses.create(
         model=model_name,             # e.g. "gpt-5.2"
