@@ -342,7 +342,7 @@ def gpt5_summarize(payload: dict, model_name: str):
 "Do NOT diagnose. If information is insufficient, say so."
 
 
-FEATURES:
+"FEATURES:"
 {payload}
 "".strip()
 
