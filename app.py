@@ -302,6 +302,35 @@ def gpt5_summarize(payload: dict, model_name: str):
     prompt = f"""
 You are assisting with an EEG review summary for research/prototyping.
 Write a concise, clinically-styled narrative based ONLY on the provided features.
+Do NOT diagnose.
+
+FEATURES:
+{payload}
+""".strip()
+
+    try:
+        # ✅ Correct GPT-5 Responses API format
+        resp = client.responses.create(
+            model=model_name,
+            input=prompt,
+            reasoning={
+                "effort": "none"   # low compute, safer
+            },
+            text={
+                "verbosity": "low"
+            }
+        )
+    except TypeError:
+        # 🔁 Fallback (older SDK safety)
+        resp = client.responses.create(
+            model=model_name,
+            input=prompt,
+        )
+
+    return resp.output_text
+
+You are assisting with an EEG review summary for research/prototyping.
+Write a concise, clinically-styled narrative based ONLY on the provided features.
 Do NOT diagnose. If information is insufficient, say so.
 Include:
 - background rhythm impressions if possible
