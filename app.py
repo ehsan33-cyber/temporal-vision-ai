@@ -332,6 +332,7 @@ FEATURES:
 
     return f"GPT summary failed: {type(last_err).__name__}: {last_err}"
 
+
 You are assisting with an EEG review summary for research/prototyping.
 Write a concise, clinically-styled narrative based ONLY on the provided features.
 Do NOT diagnose. If information is insufficient, say so.
