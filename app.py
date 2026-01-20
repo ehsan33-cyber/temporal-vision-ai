@@ -306,7 +306,7 @@ Do NOT diagnose.
 
 FEATURES:
 {payload}
-""".strip()
+"".strip()
 
     try:
         # ✅ Correct GPT-5 Responses API format
