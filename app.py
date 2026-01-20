@@ -302,32 +302,54 @@ def gpt5_summarize(payload: dict, model_name: str):
     prompt = f"""
 You are assisting with an EEG review summary for research/prototyping.
 Write a concise, clinically-styled narrative based ONLY on the provided features.
-Do NOT diagnose.
+Do NOT diagnose. If information is insufficient, say so.
 
 FEATURES:
 {payload}
-"".strip()
+""".strip()
 
-    try:
-        # ✅ Correct GPT-5 Responses API format
-        resp = client.responses.create(
+    # Try increasingly compatible parameter sets.
+    # Some GPT-5 variants reject effort="none" and only allow minimal/low/medium/high.
+    attempts = [
+        # Best (GPT-5.2 style): text.verbosity + reasoning.effort="none"
+        dict(
             model=model_name,
             input=prompt,
-            reasoning={
-                "effort": "none"   # low compute, safer
-            },
-            text={
-                "verbosity": "low"
-            }
-        )
-    except TypeError:
-        # 🔁 Fallback (older SDK safety)
-        resp = client.responses.create(
+            reasoning={"effort": "none"},
+            text={"verbosity": "low"},
+        ),
+        # Compatibility fallback: effort="minimal"
+        dict(
             model=model_name,
             input=prompt,
-        )
+            reasoning={"effort": "minimal"},
+            text={"verbosity": "low"},
+        ),
+        # More compatible fallback: effort="low"
+        dict(
+            model=model_name,
+            input=prompt,
+            reasoning={"effort": "low"},
+            text={"verbosity": "low"},
+        ),
+        # Last resort: no special params (works even on older SDK/model combos)
+        dict(
+            model=model_name,
+            input=prompt,
+        ),
+    ]
 
-    return resp.output_text
+    last_err = None
+    for kwargs in attempts:
+        try:
+            resp = client.responses.create(**kwargs)
+            return resp.output_text
+        except (TypeError, ValueError) as e:
+            last_err = e
+            continue
+
+    # If everything fails, show a friendly message (don’t crash Streamlit)
+    return f"GPT summary failed. Last error: {type(last_err).__name__}: {last_err}"
 
 You are assisting with an EEG review summary for research/prototyping.
 Write a concise, clinically-styled narrative based ONLY on the provided features.
