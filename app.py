@@ -1,13 +1,12 @@
-
 import os
 import tempfile
 import numpy as np
 import streamlit as st
 import plotly.graph_objects as go
-import matplotlib
-import mne
 
-# ---- MNE ----
+# -----------------------------
+# Optional dependencies
+# -----------------------------
 try:
     import mne
     MNE_AVAILABLE = True
@@ -15,7 +14,6 @@ except Exception:
     MNE_AVAILABLE = False
     mne = None
 
-# ---- OpenAI ----
 try:
     from openai import OpenAI
     OPENAI_AVAILABLE = True
@@ -23,12 +21,13 @@ except Exception:
     OPENAI_AVAILABLE = False
     OpenAI = None
 
+
 # -----------------------------
-# App config
+# Page config
 # -----------------------------
 st.set_page_config(page_title="Temporal Vision AI – EEG", layout="wide")
 st.title("Temporal Vision AI")
-st.caption("Stable EDF viewer: windowed loading + per-window markers + scrolling + GPT-5 summary")
+st.caption("EEG viewer: stable EDF upload + labels + baselines + scrolling + demo markers + GPT summary")
 
 
 # -----------------------------
@@ -44,189 +43,194 @@ DEFAULT_CHANNELS = [
 
 
 # -----------------------------
-# Session state init
+# Session State Init
 # -----------------------------
-if "raw" not in st.session_state:
-    st.session_state.raw = None
-if "tmp_path" not in st.session_state:
-    st.session_state.tmp_path = None
-if "ch_names" not in st.session_state:
-    st.session_state.ch_names = DEFAULT_CHANNELS
-if "sfreq" not in st.session_state:
-    st.session_state.sfreq = 256.0
-if "picks" not in st.session_state:
-    st.session_state.picks = None
-if "total_dur" not in st.session_state:
-    st.session_state.total_dur = 90.0
-if "file_key" not in st.session_state:
-    st.session_state.file_key = None
+def ss_init():
+    defaults = {
+        "raw": None,
+        "tmp_path": None,
+        "picks": None,
+        "ch_names": DEFAULT_CHANNELS,
+        "sfreq": 256.0,
+        "total_dur": 90.0,
+        "file_key": None,
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+ss_init()
 
 
 # -----------------------------
-# Utilities
+# Helpers
 # -----------------------------
-def cleanup_previous_tmp():
-    """Delete old temp EDF file if present."""
-    path = st.session_state.tmp_path
+def cleanup_tmp_file():
+    path = st.session_state.get("tmp_path")
     if path and os.path.exists(path):
         try:
             os.remove(path)
         except Exception:
             pass
-    st.session_state.tmp_path = None
     st.session_state.raw = None
+    st.session_state.tmp_path = None
     st.session_state.picks = None
+
 
 def make_blank_eeg(ch_names, sfreq=256.0, duration_s=90.0):
     n_ch = len(ch_names)
     n_samp = int(duration_s * sfreq)
     data_uV = np.zeros((n_ch, n_samp), dtype=np.float32)
-    times = np.arange(n_samp) / sfreq
-    return data_uV, times, sfreq, ch_names
+    times = np.arange(n_samp, dtype=np.float32) / float(sfreq)
+    return data_uV, times, float(sfreq), ch_names
 
-def read_edf_safely(uploaded_file, resample_hz=None):
-    """
-    Save upload to a temp file and read with preload=False to avoid RAM spikes.
-    Optionally resample for visualization (reduces CPU + plot load).
-    """
-    if not MNE_AVAILABLE:
-        st.error("Missing dependency: mne. Install: pip install mne")
-        st.stop()
 
-    # Save to temp file (prevents keeping big bytes in RAM)
+def save_upload_to_temp(uploaded_file) -> str:
+    # Save upload bytes to a temp file (reduces RAM issues)
     with tempfile.NamedTemporaryFile(delete=False, suffix=".edf") as tmp:
         tmp.write(uploaded_file.getbuffer())
-        tmp_path = tmp.name
+        return tmp.name
 
+
+def read_edf_safe(uploaded_file, resample_hz=None):
+    if not MNE_AVAILABLE:
+        st.error("Missing dependency: mne. Add it to requirements.txt: mne")
+        st.stop()
+
+    tmp_path = save_upload_to_temp(uploaded_file)
     raw = mne.io.read_raw_edf(tmp_path, preload=False, verbose="ERROR")
 
-    # Optional visualization resample (still not preloaded; MNE will handle reads)
-    if resample_hz and resample_hz > 0:
+    if resample_hz:
         try:
-            raw = raw.copy().resample(resample_hz, npad="auto")
+            raw = raw.copy().resample(float(resample_hz), npad="auto")
         except Exception as e:
             st.warning(f"Resample failed; continuing without resampling. ({e})")
 
     return raw, tmp_path
 
+
+def pick_channels(raw, max_channels: int):
+    # Prefer EEG channels if present
+    try:
+        picks = mne.pick_types(raw.info, eeg=True, exclude=[])
+        if len(picks) == 0:
+            picks = np.arange(len(raw.ch_names))
+    except Exception:
+        picks = np.arange(len(raw.ch_names))
+
+    picks = picks[:max_channels]
+    ch_names = [raw.ch_names[i] for i in picks]
+    return picks, ch_names
+
+
 def load_window_uV(raw, picks, t0, window_s):
-    """Load only the visible time window from EDF and return microvolts."""
     sfreq = float(raw.info["sfreq"])
-    n_samp_total = raw.n_times
+    n_total = int(raw.n_times)
 
     start = int(max(0, np.floor(t0 * sfreq)))
-    stop = int(min(n_samp_total, np.ceil((t0 + window_s) * sfreq)))
+    stop = int(min(n_total, np.ceil((t0 + window_s) * sfreq)))
     if stop <= start + 2:
-        stop = min(n_samp_total, start + 3)
+        stop = min(n_total, start + 3)
 
-    data = raw.get_data(picks=picks, start=start, stop=stop)  # small window only
-    data_uV = (data * 1e6).astype(np.float32)  # EDF typically in Volts
-    times = np.arange(start, stop) / sfreq
+    data_V = raw.get_data(picks=picks, start=start, stop=stop)  # window only
+    data_uV = (data_V * 1e6).astype(np.float32)
+    times = (np.arange(start, stop, dtype=np.float32) / sfreq).astype(np.float32)
     return data_uV, times, sfreq
 
-def simple_seizure_proxy_score(window_data_uV):
-    """
-    Demo heuristic score (NOT clinical):
-    - line length + power
-    """
-    ll = float(np.mean(np.sum(np.abs(np.diff(window_data_uV, axis=1)), axis=1)))
-    pwr = float(np.mean(window_data_uV ** 2))
-    return float(np.log1p(ll) + 0.5 * np.log1p(pwr))
 
 def detect_events_in_window(window_data_uV, sfreq, win_s=2.0, hop_s=0.5, z_thresh=2.7):
     """
-    Detect seizure-like intervals within the CURRENT WINDOW only.
-    Returns intervals in seconds relative to the window start (0..window_s).
+    Demo heuristic (NOT clinical).
+    Returns event intervals relative to the window start (seconds).
     """
     n_ch, n_samp = window_data_uV.shape
     win = int(win_s * sfreq)
     hop = int(hop_s * sfreq)
+
     if win < 8 or hop < 1 or n_samp < win:
         return []
 
     scores = []
     centers = []
-    for start in range(0, n_samp - win + 1, hop):
-        seg = window_data_uV[:, start:start + win]
-        scores.append(simple_seizure_proxy_score(seg))
-        centers.append((start + win // 2) / sfreq)
+
+    for s in range(0, n_samp - win + 1, hop):
+        seg = window_data_uV[:, s:s + win]
+
+        # Score: line-length + power
+        ll = float(np.mean(np.sum(np.abs(np.diff(seg, axis=1)), axis=1)))
+        pwr = float(np.mean(seg ** 2))
+        score = float(np.log1p(ll) + 0.5 * np.log1p(pwr))
+
+        scores.append(score)
+        centers.append((s + win // 2) / sfreq)
 
     scores = np.asarray(scores, dtype=np.float32)
-    if scores.size < 3 or np.std(scores) < 1e-8:
+    if scores.size < 3 or float(np.std(scores)) < 1e-8:
         return []
 
-    z = (scores - np.mean(scores)) / np.std(scores)
-    hits = z > z_thresh
+    z = (scores - float(np.mean(scores))) / float(np.std(scores))
+    hits = z > float(z_thresh)
     if not np.any(hits):
         return []
 
-    idx = np.where(hits)[0]
+    idx = np.where(hits)[0].tolist()
     groups = []
-    g = [idx[0]]
+    cur = [idx[0]]
     for i in idx[1:]:
-        if i == g[-1] + 1:
-            g.append(i)
+        if i == cur[-1] + 1:
+            cur.append(i)
         else:
-            groups.append(g)
-            g = [i]
-    groups.append(g)
+            groups.append(cur)
+            cur = [i]
+    groups.append(cur)
 
     events = []
     for g in groups:
-        start_c = centers[g[0]]
-        end_c = centers[g[-1]]
-        start_t = max(0.0, start_c - win_s / 2)
-        end_t = min(n_samp / sfreq, end_c + win_s / 2)
-        if (end_t - start_t) >= max(1.0, win_s):
-            events.append((float(start_t), float(end_t)))
+        a = centers[g[0]] - win_s / 2
+        b = centers[g[-1]] + win_s / 2
+        a = float(max(0.0, a))
+        b = float(min(n_samp / sfreq, b))
+        if (b - a) >= max(1.0, win_s):
+            events.append((a, b))
+
     return events
 
-def bandpower_simple(uV, sfreq, bands=None):
-    """
-    Lightweight bandpower estimate using rFFT power.
-    uV: (n_ch, n_samp)
-    Returns dict of band -> mean power across channels.
-    """
-    if bands is None:
-        bands = {
-            "delta_1_4": (1, 4),
-            "theta_4_8": (4, 8),
-            "alpha_8_13": (8, 13),
-            "beta_13_30": (13, 30),
-        }
 
-    n_ch, n_samp = uV.shape
+def bandpower_simple(window_data_uV, sfreq):
+    # Lightweight FFT bandpower estimate (demo)
+    bands = {
+        "delta_1_4": (1, 4),
+        "theta_4_8": (4, 8),
+        "alpha_8_13": (8, 13),
+        "beta_13_30": (13, 30),
+    }
+
+    n_ch, n_samp = window_data_uV.shape
     if n_samp < int(sfreq * 1.5):
-        return {k: None for k in bands}  # too short for stable estimate
+        return {k: None for k in bands}
 
-    x = uV - np.mean(uV, axis=1, keepdims=True)
-    # rFFT
+    x = window_data_uV - np.mean(window_data_uV, axis=1, keepdims=True)
     freqs = np.fft.rfftfreq(n_samp, d=1.0 / sfreq)
-    spec = np.abs(np.fft.rfft(x, axis=1)) ** 2  # power
+    spec = np.abs(np.fft.rfft(x, axis=1)) ** 2
 
     out = {}
     for name, (f0, f1) in bands.items():
         mask = (freqs >= f0) & (freqs < f1)
-        if not np.any(mask):
-            out[name] = None
-        else:
-            out[name] = float(np.mean(spec[:, mask]))
+        out[name] = float(np.mean(spec[:, mask])) if np.any(mask) else None
     return out
 
-def build_eeg_figure(window_data_uV, times, ch_names, t0, scale_uV, show_labels=True, event_intervals_global=None):
-    """
-    Stacked EEG with baselines + optional shaded marker regions.
-    """
-    n_ch, n_samp = window_data_uV.shape
 
-    spacing_uV = scale_uV * 3.0
+def build_eeg_figure(window_data_uV, times, ch_names, t0, window_s, scale_uV, show_labels, event_intervals_global):
+    n_ch, _ = window_data_uV.shape
+
+    # Baseline offsets (stacked)
+    spacing_uV = float(scale_uV) * 3.0
     offsets_uV = (np.arange(n_ch)[::-1] * spacing_uV).astype(np.float32)
 
     fig = go.Figure()
 
-    # plot each channel + baseline
     for ci in range(n_ch):
-        y = (window_data_uV[ci] / max(1e-6, scale_uV)) + (offsets_uV[ci] / max(1e-6, scale_uV))
+        y = (window_data_uV[ci] / max(1e-6, float(scale_uV))) + (offsets_uV[ci] / max(1e-6, float(scale_uV)))
         fig.add_trace(
             go.Scatter(
                 x=times,
@@ -237,21 +241,23 @@ def build_eeg_figure(window_data_uV, times, ch_names, t0, scale_uV, show_labels=
                 hovertemplate=f"{ch_names[ci]}<br>t=%{{x:.2f}} s<extra></extra>",
             )
         )
+        # Baseline dotted line
         fig.add_hline(
-            y=(offsets_uV[ci] / max(1e-6, scale_uV)),
+            y=(offsets_uV[ci] / max(1e-6, float(scale_uV))),
             line_width=1,
             line_dash="dot",
             opacity=0.25,
         )
 
-    # overlay markers (global time coords)
-    if event_intervals_global:
-        for (a, b) in event_intervals_global:
-            fig.add_vrect(x0=a, x1=b, opacity=0.15, line_width=0)
+    # Marker overlay (shaded vertical regions)
+    for (a, b) in event_intervals_global:
+        # only if intersects view
+        if b < t0 or a > (t0 + window_s):
+            continue
+        fig.add_vrect(x0=max(a, t0), x1=min(b, t0 + window_s), opacity=0.15, line_width=0)
 
-    # y tick labels at baseline lines
     if show_labels:
-        tickvals = (offsets_uV / max(1e-6, scale_uV)).tolist()
+        tickvals = (offsets_uV / max(1e-6, float(scale_uV))).tolist()
         ticktext = ch_names[::-1]
         fig.update_yaxes(tickmode="array", tickvals=tickvals, ticktext=ticktext)
     else:
@@ -259,69 +265,56 @@ def build_eeg_figure(window_data_uV, times, ch_names, t0, scale_uV, show_labels=
 
     fig.update_layout(
         height=720,
-        margin=dict(l=70, r=30, t=30, b=50),
+        margin=dict(l=75, r=30, t=30, b=50),
         showlegend=False,
         plot_bgcolor="#060b14",
         paper_bgcolor="#0b1220",
         font=dict(color="rgba(255,255,255,0.85)"),
     )
-
-    fig.update_xaxes(showgrid=True, minor=dict(showgrid=True), zeroline=False, title="Time (s)")
+    fig.update_xaxes(range=[t0, t0 + window_s], showgrid=True, minor=dict(showgrid=True), zeroline=False, title="Time (s)")
     fig.update_yaxes(showgrid=True, minor=dict(showgrid=True), zeroline=False, title="")
 
     return fig
 
+
 def get_openai_client():
-    """
-    Creates an OpenAI client from Streamlit secrets.
-    Requires: pip install openai
-    In Streamlit secrets:
-      OPENAI_API_KEY="..."
-    """
     if not OPENAI_AVAILABLE:
-        st.error("Missing dependency: openai. Install: pip install openai")
         return None
-
-    key = None
+    api_key = None
     try:
-        key = st.secrets.get("OPENAI_API_KEY")
+        api_key = st.secrets.get("OPENAI_API_KEY", None)
     except Exception:
-        key = None
-
-    if not key:
-        st.error("OPENAI_API_KEY not found. Add it to Streamlit secrets.")
+        api_key = None
+    if not api_key:
         return None
+    return OpenAI(api_key=api_key)
 
-    return OpenAI(api_key=key)
 
-def gpt5_summarize(payload: dict, model_name: str):
+def gpt_summarize_window(payload: dict, model_name: str):
+    """
+    Never crashes the app.
+    Returns either summary text or a helpful error message.
+    """
     client = get_openai_client()
     if client is None:
-        return None
+        return "GPT is not configured. Add OPENAI_API_KEY to Streamlit secrets, and ensure openai is in requirements.txt."
 
-    # Build the prompt WITHOUT triple quotes to avoid paste/syntax issues
+    # Build prompt safely (no triple quotes)
     prompt = "\n".join([
         "You are assisting with an EEG review summary for research/prototyping.",
         "Write a concise, clinically-styled narrative based ONLY on the provided features.",
         "Do NOT diagnose. If information is insufficient, say so.",
+        "Mention flagged intervals as 'algorithm-flagged'.",
+        "Recommend clinician review.",
         "",
         "FEATURES:",
         str(payload),
     ])
 
+    # Compatibility attempts
     attempts = [
-        # Try with settings (newer SDKs)
-        dict(
-            model=model_name,
-            input=prompt,
-            reasoning={"effort": "minimal"},
-            text={"verbosity": "low"},
-        ),
-        # Fallback (most compatible)
-        dict(
-            model=model_name,
-            input=prompt,
-        ),
+        {"model": model_name, "input": prompt, "reasoning": {"effort": "minimal"}, "text": {"verbosity": "low"}},
+        {"model": model_name, "input": prompt},
     ]
 
     last_err = None
@@ -332,44 +325,21 @@ def gpt5_summarize(payload: dict, model_name: str):
         except Exception as e:
             last_err = e
 
-    # Never crash the app if GPT fails
     return f"GPT summary failed: {type(last_err).__name__}: {last_err}"
 
 
-
-"You are assisting with an EEG review summary for research/prototyping."
-"Write a concise, clinically-styled narrative based ONLY on the provided features."
-"Do NOT diagnose. If information is insufficient, say so."
-
-
-"FEATURES:"
-{payload}
-"".strip()
-
-    resp = client.responses.create(
-        model=model_name,             # e.g. "gpt-5.2"
-        input=prompt,
-        reasoning_effort="minimal",
-        verbosity="low",
-    )
-    return resp.output_text
-
-
 # -----------------------------
-# Sidebar
+# Sidebar controls
 # -----------------------------
 with st.sidebar:
     st.header("Input")
     use_edf = st.toggle("Upload EDF", value=True)
-
-    uploaded = None
-    if use_edf:
-        uploaded = st.file_uploader("Upload .edf", type=["edf"])
+    uploaded = st.file_uploader("Upload .edf", type=["edf"]) if use_edf else None
 
     st.divider()
-    st.header("Performance / Stability")
-    resample_hz = st.selectbox("Resample for display (recommended)", [None, 128, 256, 512], index=2)
-    max_channels = st.slider("Max channels to display", 4, 32, 19, 1)
+    st.header("Performance")
+    resample_hz = st.selectbox("Resample for display", [None, 128, 256, 512], index=2)
+    max_channels = st.slider("Max channels displayed", 4, 32, 19, 1)
 
     st.divider()
     st.header("View")
@@ -379,110 +349,97 @@ with st.sidebar:
 
     st.divider()
     st.header("AI markers (demo)")
-    enable_markers = st.toggle("Overlay seizure markers", value=True)
+    enable_markers = st.toggle("Overlay markers", value=True)
     z_thresh = st.slider("Sensitivity (z-threshold)", 1.5, 5.0, 2.7, 0.1)
     det_win_s = st.slider("Detection window (s)", 1.0, 6.0, 2.0, 0.5)
     det_hop_s = st.slider("Detection hop (s)", 0.25, 2.0, 0.5, 0.25)
 
     st.divider()
-    st.header("GPT-5 Summary")
+    st.header("GPT Summary")
     enable_gpt = st.toggle("Enable GPT summary", value=False)
     model_name = st.text_input("Model name", value="gpt-5.2")
     summarize_btn = st.button("Summarize this window")
 
 
 # -----------------------------
-# Load data (stable)
+# Load EDF or blank data
 # -----------------------------
-# Detect a "new file" and clean up old temp file
 new_file_key = None
 if uploaded is not None:
     new_file_key = f"{uploaded.name}:{uploaded.size}"
+
 if new_file_key != st.session_state.file_key:
-    # New upload or cleared upload → cleanup
-    cleanup_previous_tmp()
+    cleanup_tmp_file()
     st.session_state.file_key = new_file_key
 
-# If EDF uploaded, read it (preload=False)
 if use_edf and uploaded is not None:
     if st.session_state.raw is None:
-        with st.spinner("Reading EDF (safe mode: preload=False)…"):
-            raw, tmp_path = read_edf_safely(uploaded, resample_hz=resample_hz)
+        with st.spinner("Reading EDF (stable mode: preload=False)…"):
+            raw, tmp_path = read_edf_safe(uploaded, resample_hz=resample_hz)
+            picks, ch_names = pick_channels(raw, max_channels=max_channels)
+
             st.session_state.raw = raw
             st.session_state.tmp_path = tmp_path
-
-            sfreq = float(raw.info["sfreq"])
-            st.session_state.sfreq = sfreq
-            st.session_state.total_dur = float(raw.n_times / sfreq)
-
-            # pick EEG channels if possible, else all
-            picks = mne.pick_types(raw.info, eeg=True, exclude=[])
-            if len(picks) == 0:
-                picks = np.arange(len(raw.ch_names))
-
-            # cap channels for performance
-            picks = picks[:max_channels]
             st.session_state.picks = picks
-            st.session_state.ch_names = [raw.ch_names[i] for i in picks]
+            st.session_state.ch_names = ch_names
+            st.session_state.sfreq = float(raw.info["sfreq"])
+            st.session_state.total_dur = float(raw.n_times / st.session_state.sfreq)
 
     raw = st.session_state.raw
-    sfreq = st.session_state.sfreq
-    total_dur = st.session_state.total_dur
     picks = st.session_state.picks
     ch_names = st.session_state.ch_names
-
+    sfreq = st.session_state.sfreq
+    total_dur = st.session_state.total_dur
 else:
-    # Blank demo
     raw = None
     picks = None
-    data_uV, times, sfreq, ch_names = make_blank_eeg(DEFAULT_CHANNELS, sfreq=256.0, duration_s=90.0)
-    total_dur = float(times[-1]) if len(times) else 90.0
+    data_uV, times_all, sfreq, ch_names = make_blank_eeg(DEFAULT_CHANNELS, sfreq=256.0, duration_s=90.0)
+    total_dur = float(times_all[-1]) if len(times_all) else 90.0
 
 
 # -----------------------------
-# Metrics + Scroll
+# Header metrics + scroll slider
 # -----------------------------
-col1, col2, col3 = st.columns(3)
-with col1:
+c1, c2, c3 = st.columns(3)
+with c1:
     st.metric("Sampling rate", f"{sfreq:.1f} Hz")
-with col2:
+with c2:
     st.metric("Channels", f"{len(ch_names)}")
-with col3:
+with c3:
     st.metric("Duration", f"{total_dur:.1f} s")
 
-max_t0 = max(0.0, total_dur - window_s)
+max_t0 = max(0.0, float(total_dur) - float(window_s))
 t0 = st.slider("Scroll (start time, seconds)", 0.0, float(max_t0), 0.0, 0.1)
 
+
 # -----------------------------
-# Load only the visible window
+# Load visible window only
 # -----------------------------
 if raw is not None:
-    window_data_uV, times, sfreq2 = load_window_uV(raw, picks, t0, window_s)
-    sfreq = sfreq2
+    window_data_uV, times, sfreq = load_window_uV(raw, picks, float(t0), float(window_s))
 else:
-    # blank
-    i0 = int(t0 * sfreq)
-    i1 = int((t0 + window_s) * sfreq)
+    # slice from blank data
+    i0 = int(float(t0) * float(sfreq))
+    i1 = int((float(t0) + float(window_s)) * float(sfreq))
     i1 = min(data_uV.shape[1], max(i1, i0 + 3))
     window_data_uV = data_uV[:, i0:i1]
-    times = np.arange(i0, i1) / sfreq
+    times = np.arange(i0, i1, dtype=np.float32) / float(sfreq)
 
 
 # -----------------------------
-# AI markers (per-window only)
+# Per-window markers
 # -----------------------------
 event_intervals_global = []
 if enable_markers and raw is not None:
     local_events = detect_events_in_window(
         window_data_uV=window_data_uV,
-        sfreq=sfreq,
-        win_s=det_win_s,
-        hop_s=det_hop_s,
-        z_thresh=z_thresh,
+        sfreq=float(sfreq),
+        win_s=float(det_win_s),
+        hop_s=float(det_hop_s),
+        z_thresh=float(z_thresh),
     )
-    # Convert to global time coords for plotting
-    event_intervals_global = [(t0 + a, t0 + b) for (a, b) in local_events]
-    st.caption("Shaded regions are **algorithm-flagged** (demo heuristic). Not a diagnosis.")
+    event_intervals_global = [(float(t0) + a, float(t0) + b) for (a, b) in local_events]
+    st.caption("Shaded regions are algorithm-flagged (demo heuristic). Not a diagnosis.")
 
 
 # -----------------------------
@@ -492,23 +449,23 @@ fig = build_eeg_figure(
     window_data_uV=window_data_uV,
     times=times,
     ch_names=ch_names,
-    t0=t0,
-    scale_uV=scale_uV,
-    show_labels=show_labels,
+    t0=float(t0),
+    window_s=float(window_s),
+    scale_uV=float(scale_uV),
+    show_labels=bool(show_labels),
     event_intervals_global=event_intervals_global,
 )
 st.plotly_chart(fig, use_container_width=True)
 
 
 # -----------------------------
-# GPT-5 Summary (features only)
+# GPT summary (features only)
 # -----------------------------
 if enable_gpt and summarize_btn:
-    # Compute compact features for GPT (don’t send raw arrays)
-    bp = bandpower_simple(window_data_uV, sfreq)
+    bp = bandpower_simple(window_data_uV, float(sfreq))
     rms_uV = float(np.sqrt(np.mean(window_data_uV ** 2)))
-    ll = float(np.mean(np.sum(np.abs(np.diff(window_data_uV, axis=1)), axis=1)))
     peak_uV = float(np.max(np.abs(window_data_uV)))
+    line_len = float(np.mean(np.sum(np.abs(np.diff(window_data_uV, axis=1)), axis=1)))
 
     payload = {
         "window_start_s": float(t0),
@@ -517,8 +474,8 @@ if enable_gpt and summarize_btn:
         "channels_displayed": ch_names,
         "signal_features": {
             "rms_uV": rms_uV,
-            "mean_line_length": ll,
             "peak_abs_uV": peak_uV,
+            "mean_line_length": line_len,
             "bandpower_simple": bp,
         },
         "algorithm_flagged_intervals_s": [
@@ -526,42 +483,29 @@ if enable_gpt and summarize_btn:
             for (a, b) in event_intervals_global
         ],
         "limitations": [
-            "Prototype summary. Not for clinical diagnosis.",
-            "Bandpower estimates are simplistic and for demo only.",
-            "Markers are based on a heuristic unless replaced with a trained model."
+            "Prototype only. Not for clinical diagnosis.",
+            "Markers are a demo heuristic unless replaced with a trained model."
         ],
     }
 
-    with st.spinner("Generating summary with GPT-5…"):
-        text = gpt5_summarize(payload, model_name=model_name)
-        if text:
-            st.subheader("GPT Summary (Prototype)")
-            st.write(text)
-            st.download_button(
-                "Download summary (.txt)",
-                data=text.encode("utf-8"),
-                file_name="eeg_summary.txt",
-                mime="text/plain",
-            )
+    with st.spinner("Generating summary…"):
+        text = gpt_summarize_window(payload, model_name=model_name)
 
-# -----------------------------
-# Optional: show intervals list
-# -----------------------------
-if enable_markers:
-    with st.expander("Algorithm-flagged intervals (this window)", expanded=False):
-        if not event_intervals_global:
-            st.write("None.")
-        else:
-            for i, (a, b) in enumerate(event_intervals_global, 1):
-                st.write(f"{i}. {a:.2f}s → {b:.2f}s  (duration {b-a:.2f}s)")
+    st.subheader("GPT Summary (Prototype)")
+    st.write(text)
+
+    st.download_button(
+        "Download summary (.txt)",
+        data=str(text).encode("utf-8"),
+        file_name="eeg_summary.txt",
+        mime="text/plain",
+    )
 
 
 # -----------------------------
-# Cleanup hint (for long sessions)
+# Troubleshooting panel
 # -----------------------------
 with st.expander("Troubleshooting", expanded=False):
-    st.write(
-        "- If uploads still crash on Streamlit Cloud: reduce **Max channels**, shorten **Window length**, and set **Resample** to 128 or 256.\n"
-        "- For huge EDFs (hours long), this app stays stable because it only loads the visible window.\n"
-        "- GPT summary requires the OpenAI Python package and an API key in Streamlit secrets."
-    )
+    st.write("If EDF upload crashes: reduce Max channels, reduce Window length, and resample to 128 or 256.")
+    st.write("If GPT says not configured: add OPENAI_API_KEY to Streamlit secrets and ensure openai is installed.")
+    st.write("This app intentionally avoids multi-line triple-quote prompts to prevent syntax errors.")
