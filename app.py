@@ -340,11 +340,7 @@ def gpt5_summarize(payload: dict, model_name: str):
 "You are assisting with an EEG review summary for research/prototyping."
 "Write a concise, clinically-styled narrative based ONLY on the provided features."
 "Do NOT diagnose. If information is insufficient, say so."
-Include:
-- background rhythm impressions if possible
-- artifact or limitations if noted
-- mention detected intervals (if any) as "algorithm-flagged"
-- recommend clinician review
+
 
 FEATURES:
 {payload}
