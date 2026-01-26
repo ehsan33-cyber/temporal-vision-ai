@@ -301,15 +301,26 @@ def gpt_summarize_window(payload: dict, model_name: str):
 
     # Build prompt safely (no triple quotes)
     prompt = "\n".join([
-        "You are assisting with an EEG review summary for research/prototyping.",
-        "Write a concise, clinically-styled narrative based ONLY on the provided features.",
-        "Do NOT diagnose. If information is insufficient, say so.",
-        "Mention flagged intervals as 'algorithm-flagged'.",
-        "Recommend clinician review.",
-        "",
-        "FEATURES:",
-        str(payload),
-    ])
+    "You are assisting with an EEG review summary for research/prototyping.",
+    "Base your summary ONLY on the provided EEG features and algorithm outputs.",
+    "Do NOT diagnose. Use cautious language like 'algorithm-flagged' or 'may be consistent with'.",
+    "",
+    "REQUIRED OUTPUT STRUCTURE:",
+    "1) Background EEG description (brief).",
+    "2) Algorithm-flagged activity:",
+    "   - State clearly whether seizure-like activity was flagged in this window.",
+    "   - If flagged, list the time intervals and describe what features suggest this",
+    "     (rhythmic activity, increased amplitude, evolving frequency, spikes, etc.).",
+    "3) Channel involvement: name the most involved channels from the payload.",
+    "4) Impression:",
+    "   - If seizure_likelihood_window is 'moderate' or 'high', say:",
+    "     'Seizure-like activity suspected by algorithm.'",
+    "   - Otherwise say activity is not strongly suggestive of seizure.",
+    "5) Recommendation: Clinician review recommended.",
+    "",
+    "FEATURES PAYLOAD:",
+    str(payload),
+])
 
     # Compatibility attempts
     attempts = [
@@ -467,26 +478,62 @@ if enable_gpt and summarize_btn:
     peak_uV = float(np.max(np.abs(window_data_uV)))
     line_len = float(np.mean(np.sum(np.abs(np.diff(window_data_uV, axis=1)), axis=1)))
 
+    # ---- Seizure likelihood estimate (based on markers in view) ----
+flagged_total_s = float(sum((b - a) for (a, b) in event_intervals_global))
+likelihood = "low"
+if flagged_total_s >= 3.0:
+    likelihood = "moderate"
+if flagged_total_s >= 6.0:
+    likelihood = "high"
+
+# ---- Channel involvement (most active channels) ----
+per_ch_line_len = np.sum(np.abs(np.diff(window_data_uV, axis=1)), axis=1)
+top_idx = np.argsort(per_ch_line_len)[-5:][::-1]
+top_channels_ll = [{"channel": ch_names[i], "line_length": float(per_ch_line_len[i])} for i in top_idx]
+
     payload = {
-        "window_start_s": float(t0),
-        "window_length_s": float(window_s),
-        "sampling_rate_hz": float(sfreq),
-        "channels_displayed": ch_names,
-        "signal_features": {
-            "rms_uV": rms_uV,
-            "peak_abs_uV": peak_uV,
-            "mean_line_length": line_len,
-            "bandpower_simple": bp,
-        },
-        "algorithm_flagged_intervals_s": [
-            {"start": float(a), "end": float(b), "duration": float(b - a)}
-            for (a, b) in event_intervals_global
-        ],
-        "limitations": [
-            "Prototype only. Not for clinical diagnosis.",
-            "Markers are a demo heuristic unless replaced with a trained model."
-        ],
-    }
+    "window_start_s": float(t0),
+    "window_length_s": float(window_s),
+    "sampling_rate_hz": float(sfreq),
+    "channels_displayed": ch_names,
+
+    "signal_features": {
+        "rms_uV": rms_uV,
+        "peak_abs_uV": peak_uV,
+        "mean_line_length": line_len,
+        "bandpower_simple": bp,
+    },
+
+    "algorithm_flagged_intervals_s": [
+        {"start": float(a), "end": float(b), "duration": float(b - a)}
+        for (a, b) in event_intervals_global
+    ],
+
+    # 🔹 New seizure-awareness fields
+    "seizure_likelihood_window": likelihood,
+
+    "marker_summary": {
+        "flagged_total_seconds_in_view": flagged_total_s,
+        "flagged_count": len(event_intervals_global),
+    },
+
+    "channel_involvement": {
+        "top_by_line_length": top_channels_ll,
+    },
+
+    "limitations": [
+        "Prototype only. Not for clinical diagnosis.",
+        "Markers are a demo heuristic unless replaced with a trained model."
+    ],
+}
+        "seizure_likelihood_window": likelihood,
+"marker_summary": {
+    "flagged_total_seconds_in_view": flagged_total_s,
+    "flagged_count": len(event_intervals_global),
+},
+"channel_involvement": {
+    "top_by_line_length": top_channels_ll,
+},
 
     with st.spinner("Generating summary…"):
         text = gpt_summarize_window(payload, model_name=model_name)
