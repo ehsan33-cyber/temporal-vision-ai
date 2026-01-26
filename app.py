@@ -479,23 +479,26 @@ if enable_gpt and summarize_btn:
     line_len = float(np.mean(np.sum(np.abs(np.diff(window_data_uV, axis=1)), axis=1)))
 
     # ---- Seizure likelihood estimate (based on markers in view) ----
-flagged_total_s = float(sum((b - a) for (a, b) in event_intervals_global))
-likelihood = "low"
-if flagged_total_s >= 3.0:
-    likelihood = "moderate"
-if flagged_total_s >= 6.0:
-    likelihood = "high"
+    flagged_total_s = float(sum((b - a) for (a, b) in event_intervals_global))
+    likelihood = "low"
+    if flagged_total_s >= 3.0:
+        likelihood = "moderate"
+    if flagged_total_s >= 6.0:
+        likelihood = "high"
 
-# ---- Channel involvement (most active channels) ----
-per_ch_line_len = np.sum(np.abs(np.diff(window_data_uV, axis=1)), axis=1)
-top_idx = np.argsort(per_ch_line_len)[-5:][::-1]
-top_channels_ll = [{"channel": ch_names[i], "line_length": float(per_ch_line_len[i])} for i in top_idx]
+    # ---- Channel involvement (most active channels) ----
+    per_ch_line_len = np.sum(np.abs(np.diff(window_data_uV, axis=1)), axis=1)
+    top_idx = np.argsort(per_ch_line_len)[-5:][::-1]
+    top_channels_ll = [
+        {"channel": ch_names[i], "line_length": float(per_ch_line_len[i])}
+        for i in top_idx
+    ]
 
-payload = {
-    "window_start_s": float(t0),
-    "window_length_s": float(window_s),
-    "sampling_rate_hz": float(sfreq),
-    "channels_displayed": ch_names,
+    payload = {
+        "window_start_s": float(t0),
+        "window_length_s": float(window_s),
+        "sampling_rate_hz": float(sfreq),
+        "channels_displayed": ch_names,
 
         "signal_features": {
             "rms_uV": rms_uV,
@@ -525,16 +528,6 @@ payload = {
             "Markers are a demo heuristic unless replaced with a trained model."
         ],
     }
-
-
-"seizure_likelihood_window": likelihood,
-    "marker_summary": {
-    "flagged_total_seconds_in_view": flagged_total_s,
-    "flagged_count": len(event_intervals_global),
-},
-"channel_involvement": {
-    "top_by_line_length": top_channels_ll,
-},
 
     with st.spinner("Generating summary…"):
         text = gpt_summarize_window(payload, model_name=model_name)
