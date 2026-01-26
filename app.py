@@ -491,7 +491,7 @@ per_ch_line_len = np.sum(np.abs(np.diff(window_data_uV, axis=1)), axis=1)
 top_idx = np.argsort(per_ch_line_len)[-5:][::-1]
 top_channels_ll = [{"channel": ch_names[i], "line_length": float(per_ch_line_len[i])} for i in top_idx]
 
-payload = {
+    payload = {
         "window_start_s": float(t0),
         "window_length_s": float(window_s),
         "sampling_rate_hz": float(sfreq),
@@ -525,6 +525,7 @@ payload = {
             "Markers are a demo heuristic unless replaced with a trained model."
         ],
     }
+
 
         "seizure_likelihood_window": likelihood,
 "marker_summary": {
