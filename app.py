@@ -491,41 +491,41 @@ per_ch_line_len = np.sum(np.abs(np.diff(window_data_uV, axis=1)), axis=1)
 top_idx = np.argsort(per_ch_line_len)[-5:][::-1]
 top_channels_ll = [{"channel": ch_names[i], "line_length": float(per_ch_line_len[i])} for i in top_idx]
 
-payload = {
-    "window_start_s": float(t0),
-    "window_length_s": float(window_s),
-    "sampling_rate_hz": float(sfreq),
-    "channels_displayed": ch_names,
+    payload = {
+        "window_start_s": float(t0),
+        "window_length_s": float(window_s),
+        "sampling_rate_hz": float(sfreq),
+        "channels_displayed": ch_names,
 
-    "signal_features": {
-        "rms_uV": rms_uV,
-        "peak_abs_uV": peak_uV,
-        "mean_line_length": line_len,
-        "bandpower_simple": bp,
-    },
+        "signal_features": {
+            "rms_uV": rms_uV,
+            "peak_abs_uV": peak_uV,
+            "mean_line_length": line_len,
+            "bandpower_simple": bp,
+        },
 
-    "algorithm_flagged_intervals_s": [
-        {"start": float(a), "end": float(b), "duration": float(b - a)}
-        for (a, b) in event_intervals_global
-    ],
+        "algorithm_flagged_intervals_s": [
+            {"start": float(a), "end": float(b), "duration": float(b - a)}
+            for (a, b) in event_intervals_global
+        ],
 
-    # 🔹 New seizure-awareness fields
-    "seizure_likelihood_window": likelihood,
+        "seizure_likelihood_window": likelihood,
 
-    "marker_summary": {
-        "flagged_total_seconds_in_view": flagged_total_s,
-        "flagged_count": len(event_intervals_global),
-    },
+        "marker_summary": {
+            "flagged_total_seconds_in_view": flagged_total_s,
+            "flagged_count": len(event_intervals_global),
+        },
 
-    "channel_involvement": {
-        "top_by_line_length": top_channels_ll,
-    },
+        "channel_involvement": {
+            "top_by_line_length": top_channels_ll,
+        },
 
-    "limitations": [
-        "Prototype only. Not for clinical diagnosis.",
-        "Markers are a demo heuristic unless replaced with a trained model."
-    ],
-}
+        "limitations": [
+            "Prototype only. Not for clinical diagnosis.",
+            "Markers are a demo heuristic unless replaced with a trained model."
+        ],
+    }
+
         "seizure_likelihood_window": likelihood,
 "marker_summary": {
     "flagged_total_seconds_in_view": flagged_total_s,
