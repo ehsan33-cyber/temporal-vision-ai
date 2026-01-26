@@ -527,8 +527,8 @@ payload = {
     }
 
 
-        "seizure_likelihood_window": likelihood,
-"marker_summary": {
+"seizure_likelihood_window": likelihood,
+    "marker_summary": {
     "flagged_total_seconds_in_view": flagged_total_s,
     "flagged_count": len(event_intervals_global),
 },
